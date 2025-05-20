@@ -2,6 +2,7 @@ import sys
 import time
 import os
 import glob
+import pygetwindow as gw
 import pyautogui  # Import pyautogui for mouse control
 from PyQt5.QtWidgets import QApplication, QWidget, QPushButton, QTextEdit, QVBoxLayout, QGraphicsScene, QGraphicsView, \
     QHBoxLayout, QGridLayout, QFileDialog, QLabel, QLineEdit, QCheckBox
@@ -36,12 +37,18 @@ class MouseWorker(QThread):
 
     def run(self):
         try:
-            # Simulate the mouse click at the point
-            pyautogui.moveTo(self.point[0], self.point[1])  # Move the mouse to the point
-            pyautogui.mouseDown()  # Press the mouse down (click down)
-            time.sleep(0.01)  # Hold the click for 10ms
-            pyautogui.mouseUp()  # Release the mouse (click up)
-            # Emit signal when click is done
+            # Bring EOS Utility window to front
+            eos_windows = [w for w in gw.getWindowsWithTitle('EOS Utility') if w.isVisible]
+            if eos_windows:
+                eos_windows[0].activate()
+                time.sleep(0.3)  # Wait for focus switch
+
+            # Move and click
+            pyautogui.moveTo(self.point[0], self.point[1])
+            pyautogui.mouseDown()
+            time.sleep(0.05)  # Slightly longer hold
+            pyautogui.mouseUp()
+
             self.click_done.emit(f"Mouse clicked at {self.point}")
         except Exception as e:
             self.click_done.emit(f"Error during click: {e}")
@@ -95,7 +102,7 @@ class OMHandlerApp(QWidget):
         button_layout.addWidget(self.define_button, 0, 0)
 
         # Create a checkbox to control auto-focus
-        self.focus_checkbox = QCheckBox("Auto-Focus", self)
+        self.focus_checkbox = QCheckBox("Pin on Top", self)
         self.focus_checkbox.setChecked(True)
         button_layout.addWidget(self.focus_checkbox, 0, 1)
 
@@ -211,7 +218,7 @@ class OMHandlerApp(QWidget):
             self.folder_path_display.setText(folder)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Return:  # If Enter key is pressed
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             self.simulate_click()
 
     def simulate_click(self):
@@ -219,6 +226,7 @@ class OMHandlerApp(QWidget):
 
         if point:  # If the point is defined
             print(f"Simulated click at: {point}")
+            self.pre_click_time = time.time()
 
             # Run the mouse click in a separate thread
             self.mouse_worker = MouseWorker(point)
@@ -236,8 +244,8 @@ class OMHandlerApp(QWidget):
         self.update_log(action_info)
 
         # Attempt to rename latest EOSCapture image
-        time.sleep(0.5)
-        self.rename_latest_eos_capture()
+        self.rename_latest_eos_capture(self.pre_click_time)
+
 
     def ensure_window_focus(self):
         # Only refocus the window if the checkbox is checked
@@ -245,52 +253,54 @@ class OMHandlerApp(QWidget):
             if not self.hasFocus():
                 self.activateWindow()
 
-
-    def rename_latest_eos_capture(self):
+    def rename_latest_eos_capture(self, reference_time):
         folder = self.folder_path_display.text()
         if not folder or not os.path.isdir(folder):
             self.update_log("No valid folder selected.")
             return
 
-        # Only consider .jpg files
-        jpg_files = glob.glob(os.path.join(folder, "*.jpg"))
-        if not jpg_files:
-            self.update_log("No .jpg files found in selected folder.")
-            return
+        for attempt in range(10):
+            # Only consider .jpg files
+            jpg_files = glob.glob(os.path.join(folder, "*.jpg"))
+            jpg_files = [f for f in jpg_files if os.path.getctime(f) > reference_time]
 
-        # Get latest jpg file
-        latest_file = max(jpg_files, key=os.path.getctime)
-        basename = os.path.basename(latest_file)
+            if jpg_files:
+                # Get the most recently created file among them
+                latest_file = max(jpg_files, key=os.path.getctime)
+                basename = os.path.basename(latest_file)
 
-        if basename.startswith("EOSCapture"):
-            # Build new name
-            text_value = self.text_input.toPlainText().strip().replace(" ", "_")
-            val1 = self.int_box1.value()
-            val2 = self.int_box2.value()
-            val3 = self.int_box3.value()
-            val4 = self.combo_box.currentText()
+                if basename.startswith("EOSCapture"):
+                    text_value = self.text_input.toPlainText().strip().replace(" ", "_")
+                    val1 = self.int_box1.value()
+                    val2 = self.int_box2.value()
+                    val3 = self.int_box3.value()
+                    val4 = self.combo_box.currentText()
 
-            name_parts = [text_value, str(val1), str(val2), str(val3), val4]
-            new_filename = "_".join(name_parts) + ".jpg"
-            new_path = os.path.join(folder, new_filename)
+                    name_parts = [text_value, str(val1), str(val2), str(val3), val4]
+                    new_filename = "_".join(name_parts) + ".jpg"
+                    new_path = os.path.join(folder, new_filename)
 
-            try:
-                os.rename(latest_file, new_path)
-                self.update_log(f"Renamed: {basename} → {new_filename}")
+                    try:
+                        os.rename(latest_file, new_path)
+                        self.update_log(f"Renamed: {basename} → {new_filename}")
 
-                # Rotate combo box: 50 → 20 → 10 → 5 → 50
-                rotation_order = ["50", "20", "10", "5"]
-                current_index = rotation_order.index(val4)
-                next_index = (current_index + 1) % len(rotation_order)
-                self.combo_box.setCurrentText(rotation_order[next_index])
+                        # Rotate combo box: 50 → 20 → 10 → 5 → 50
+                        rotation_order = ["50", "20", "10", "5"]
+                        current_index = rotation_order.index(val4)
+                        next_index = (current_index + 1) % len(rotation_order)
+                        self.combo_box.setCurrentText(rotation_order[next_index])
 
-                # If rotating from 5 → 50, increment int_box3
-                if val4 == "5":
-                    self.int_box3.setValue(self.int_box3.value() + 1)
+                        if val4 == "5":
+                            self.int_box3.setValue(self.int_box3.value() + 1)
 
-            except Exception as e:
-                self.update_log(f"Rename failed: {e}")
+                        return  # ✅ Done
+                    except Exception as e:
+                        self.update_log(f"Rename failed: {e}")
+                        return
+            time.sleep(0.2)  # Wait before trying again
 
+        # If loop ends without finding a file
+        self.update_log("No new .jpg file detected after shutter.")
 
     def update_log(self, message):
         """ Append new messages to the log and ensure it's scrollable """
